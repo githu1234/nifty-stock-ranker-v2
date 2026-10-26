@@ -22,6 +22,80 @@ st.caption(
 OPTIONAL_GROUPS = [g for g in E.GROUP_NAMES if g != "Technical"]
 FII_TEMPLATE = "date,fii_net,dii_net\n2026-10-23,-1500.5,2100.3\n2026-10-26,320.0,-410.7\n"
 
+def _local_assistant_reply(question):
+    """Answer common questions from local app guidance and the current run."""
+    q = " ".join(question.casefold().split())
+    saved = st.session_state.get("res")
+    result = saved.get("res") if saved else None
+    metrics = result.get("metrics") if result else None
+
+    if any(term in q for term in ("auc", "accuracy", "baseline", "hit rate", "rank correlation", "t-stat", "t stat")) or " ic " in f" {q} ":
+        if metrics:
+            return (
+                f"This run has {metrics['accuracy']:.1%} accuracy versus a "
+                f"{metrics['baseline_accuracy']:.1%} naive baseline, and AUC {metrics['auc']:.3f}. "
+                f"Top-pick hit rate is {metrics['topk_hit_rate']:.1%}; rank correlation (IC) is "
+                f"{metrics['ic_mean']:+.3f} (t-stat {metrics['ic_tstat']:+.1f}). "
+                "Accuracy near the baseline and AUC near 0.50 are close to chance."
+            )
+        return "Accuracy is the share of held-out predictions that were correct. AUC measures how well the model ranks better outcomes above worse ones; 0.50 is chance. Run an analysis to see your metrics."
+
+    if any(term in q for term in ("backtest", "drawdown", "sharpe", "cagr", "trading cost", "after cost", "returns")):
+        if result:
+            net = result["backtest_stats"]["strategy_net"]
+            benchmark = result["backtest_stats"]["benchmark"]
+            return (f"This run's strategy returned {net['cagr']:+.1%} annualized after costs "
+                    f"(Sharpe {net['sharpe']:.2f}), versus {benchmark['cagr']:+.1%} for the equal-weight benchmark. "
+                    "This is a historical simulation, not a forecast.")
+        return "The backtest repeatedly holds the top-ranked picks, applies the round-trip cost you set, and compares results with an equal-weight basket. Past results do not predict future performance."
+
+    if any(term in q for term in ("score", "pick", "rank", "probability", "recommend", "top-k", "top k")):
+        return ("A score estimates the model's probability of meeting the target selected in the sidebar "
+                "(beating the median stock or closing higher) over your selected horizon. It is not an expected return or a buy/sell recommendation.")
+
+    if any(term in q for term in ("fii", "dii", "flows")):
+        return "FII/DII data is optional. Upload a CSV with columns date, fii_net, and dii_net (values in Rs crore); the app lags the flows by one trading day. Use the sidebar's Download CSV template button."
+
+    if any(term in q for term in ("outlier", "bad data", "winsoriz", "clean", "alert")):
+        return "The cleaning option removes one-day price spikes that immediately reverse. Winsorizing clips feature values to the 1st–99th percentile using training data only. Genuine large moves and gaps remain as features and can trigger alerts."
+
+    if any(term in q for term in ("data", "yahoo", "ticker", "demo", "real", "live")):
+        return "With Demo mode off, the app fetches daily adjusted price history from Yahoo Finance, plus available market, VIX, sector, and global series. Demo mode uses simulated data. It is daily data, not a streaming quote."
+
+    if any(term in q for term in ("feature", "technical", "sector", "global", "vix", "market", "rsi", "macd")):
+        return "Technical indicators are always used. Optional groups add Market & VIX, Sector, Global cues, Events & outliers, and FII/DII flows. Switch groups in the sidebar and rerun to compare out-of-sample accuracy."
+
+    if any(term in q for term in ("model", "gradient boosting", "random forest", "logistic")):
+        return f"Available model choices are {', '.join(E.MODELS)}. Compare walk-forward accuracy/AUC and the after-cost backtest, not training fit."
+
+    if any(term in q for term in ("horizon", "next day", "next week", "5 trading days")):
+        return "Next day targets one trading day ahead; next week targets five trading days. The backtest holds picks over the same horizon."
+
+    if any(term in q for term in ("openai", "api", "chatbot")):
+        return "This help bot uses built-in app guidance and does not call OpenAI or another external AI service, so no API key is needed."
+
+    return "I can help with settings, Yahoo Finance data, scores, accuracy/AUC, backtests, feature groups, FII/DII uploads, and outlier handling. Try asking, 'What does AUC mean?'"
+
+
+def render_question_assistant():
+    """Display a chat-style help assistant that keeps questions in this app session."""
+    with st.expander("💬 Ask the ranker help bot", expanded=False):
+        st.caption("Ask about app settings, data, scores, accuracy, or backtests. Replies use built-in guidance; your messages are not sent to an external AI service.")
+        history = st.session_state.setdefault("ranker_chat_messages", [])
+        for message in history:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+        question = st.chat_input("Ask about the app or its results…", key="ranker_chat_input")
+        if question:
+            history.append({"role": "user", "content": question})
+            with st.chat_message("user"):
+                st.markdown(question)
+            answer = _local_assistant_reply(question)
+            history.append({"role": "assistant", "content": answer})
+            with st.chat_message("assistant"):
+                st.markdown(answer)
+
+
 # ------------------------------------------------------------------ sidebar
 with st.sidebar:
     st.header("Settings")
@@ -122,6 +196,8 @@ if run:
     st.session_state["res"] = dict(res=res, D=D, demo=demo, n=len(D["prices"]), horizon=horizon,
                                    top_k=top_k, cost=cost_pct, label=horizon_label,
                                    winsor=winsor, clean=clean, groups=groups)
+
+render_question_assistant()
 
 if "res" not in st.session_state:
     st.info("Choose your settings in the sidebar and press **Run analysis**. "
